@@ -1,0 +1,272 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cloudx-CTF - temporary instructor-operated Linux permissions demo for AWS Academy sandbox'
+Parameters:
+  ExistingKeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: vockey
+    Description: Existing key pair in your Learner Lab. Change if vockey is unavailable.
+  AllowedSshCidr:
+    Type: String
+    Default: 0.0.0.0/32
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/(\d|[12]\d|3[012])$'
+    Description: Your public client IPv4 address ending in /32. Safe default allows no usable client.
+  InstanceSize:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t2.micro, t3.micro, t3.small]
+    Description: Budget-conscious x86 instance from learner sandbox supported types.
+  RuntimeMinutes:
+    Type: Number
+    Default: 90
+    MinValue: 30
+    MaxValue: 180
+    Description: Automatically terminate EC2 after this many minutes; delete the stack separately.
+  AmazonLinuxAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: AWS public SSM parameter for Amazon Linux 2023 in us-east-1.
+Resources:
+  LabVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.72.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: cloudx-demo-vpc}, {Key: Project, Value: cloudx-ctf}]
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{Key: Project, Value: cloudx-ctf}]
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref LabVPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVPC
+      CidrBlock: 10.72.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: cloudx-demo-subnet}]
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref LabVPC
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref RouteTable
+  InstructorSshSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Restricted instructor-only SSH access for Cloudx demo
+      VpcId: !Ref LabVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+          Description: Instructor public IPv4 only; never use 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags: [{Key: Project, Value: cloudx-ctf}]
+  LabInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: DefaultRoute
+    Properties:
+      ImageId: !Ref AmazonLinuxAmi
+      InstanceType: !Ref InstanceSize
+      KeyName: !Ref ExistingKeyPair
+      InstanceInitiatedShutdownBehavior: terminate
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          AssociatePublicIpAddress: true
+          GroupSet: [!Ref InstructorSshSecurityGroup]
+          SubnetId: !Ref PublicSubnet
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeType: gp3
+            VolumeSize: 8
+      Tags:
+        - {Key: Name, Value: cloudx-ctf-demo}
+        - {Key: Project, Value: cloudx-ctf}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          exec > >(tee -a /var/log/cloudx-bootstrap.log) 2>&1
+          echo 'Bootstrapping Cloudx-CTF permissions exercise'
+          id learner >/dev/null 2>&1 || useradd -m -s /bin/bash learner
+          id observer >/dev/null 2>&1 || useradd -m -s /bin/bash observer
+          chmod 0755 /home/learner
+          install -d -o learner -g learner -m 0755 /home/learner/legacy-backups
+          cat > /home/learner/legacy-backups/app.conf.bak <<'EXAMPLE'
+          # Training data only. Never place real secrets in CTF challenges.
+          APP=Cloudx-CTF
+          DEMO_FLAG=CLOUDX{OWNER_ONLY_BACKUP}
+          EXAMPLE
+          chown learner:learner /home/learner/legacy-backups/app.conf.bak
+          chmod 0644 /home/learner/legacy-backups/app.conf.bak
+          rm -f /home/learner/reflection.txt
+          cat > /home/learner/README-LAB.txt <<'INSTRUCTIONS'
+          Cloudx-CTF / Linux permissions
+          
+          Scenario: A backup file may expose a pretend application secret.
+          Goal: investigate and remediate the file-permissions weakness.
+          
+          1. Enter the learner shell: sudo su - learner
+          2. Read README-LAB.txt and inspect legacy-backups/app.conf.bak.
+          3. Use chmod to restrict the file so only its owner can read it.
+          4. Write at least 40 characters in ~/reflection.txt describing:
+             what was wrong, what you changed, and how to verify legitimate access.
+          5. Exit to the instructor shell: exit
+          6. Run: sudo cloudx-grade
+          
+          Teacher reset: sudo cloudx-reset
+          Reports: sudo cat /var/lib/cloudx-ctf/reports/latest-report.json
+          IMPORTANT: This environment is instructor-operated; not safe for
+          untrusted learners or actual exploitable VM challenges.
+          INSTRUCTIONS
+          chown learner:learner /home/learner/README-LAB.txt
+          chmod 0644 /home/learner/README-LAB.txt
+          cat > /usr/local/bin/cloudx-grade <<'GRADER_PYTHON'
+          #!/usr/bin/env python3
+          """Grade an instructor-controlled Linux lab from machine state, not student claims."""
+          import argparse
+          from datetime import datetime, timezone
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import subprocess
+          import sys
+          import uuid
+          
+          BACKUP = Path("/home/learner/legacy-backups/app.conf.bak")
+          REFLECTION = Path("/home/learner/reflection.txt")
+          REPORT_DIR = Path("/var/lib/cloudx-ctf/reports")
+          
+          def can_read_as(username, path):
+              try:
+                  result = subprocess.run(
+                      ["runuser", "-u", username, "--", "test", "-r", str(path)],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                      timeout=5, check=False,
+                  )
+                  return result.returncode == 0
+              except (OSError, subprocess.TimeoutExpired):
+                  return False
+          
+          def assess(backup=BACKUP, reflection=REFLECTION, owner="learner", outsider="observer"):
+              if not backup.is_file():
+                  raise RuntimeError("Challenge backup is missing; reinitialize the exercise")
+              mode = stat.S_IMODE(backup.stat().st_mode)
+              secure_mode = (mode & 0o077) == 0
+              outsider_blocked = not can_read_as(outsider, backup)
+              owner_can_read = can_read_as(owner, backup)
+              reflection_ok = reflection.is_file() and len(
+                  reflection.read_text(encoding="utf-8", errors="replace").strip()
+              ) >= 40
+              checks = [
+                  ("Restrict the backup to its owner", 35, secure_mode),
+                  ("Verify a different unprivileged user is denied", 30, outsider_blocked),
+                  ("Verify the legitimate owner retains access", 20, owner_can_read),
+                  ("Submit a reflection of at least 40 characters", 15, reflection_ok),
+              ]
+              score = sum(points for _, points, passed in checks if passed)
+              next_steps = [
+                  description for description, _, passed in checks if not passed
+              ]
+              return {
+                  "attempt_id": str(uuid.uuid4()),
+                  "challenge_id": "linux-file-permissions-01",
+                  "challenge_version": "0.1",
+                  "assessment_version": "0.1",
+                  "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                  "score": score,
+                  "max_score": 100,
+                  "complete": score == 100,
+                  "rubric": [
+                      {"criterion": description, "possible": points,
+                       "earned": points if passed else 0, "passed": passed}
+                      for description, points, passed in checks
+                  ],
+                  "feedback": ("All automated checks passed; instructor should review the explanation."
+                               if not next_steps else "Next: " + "; ".join(next_steps) + "."),
+                  "notes": [
+                      "This grades observable Linux state, not understanding or command intent.",
+                      "Reflection length is checked, not its correctness; instructor review is required.",
+                      "No shell history or secrets are sent to any external API.",
+                  ],
+                  "observed_file_mode": oct(mode),
+              }
+          
+          def main():
+              parser = argparse.ArgumentParser(description="Grade a Cloudx-CTF Linux permissions exercise")
+              parser.add_argument("--output-dir", type=Path, default=REPORT_DIR)
+              args = parser.parse_args()
+              if os.geteuid() != 0:
+                  parser.error("Run as an instructor with sudo so independent user checks are reliable")
+              try:
+                  report = assess()
+                  args.output_dir.mkdir(parents=True, exist_ok=True)
+                  path = args.output_dir / "latest-report.json"
+                  path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+                  os.chmod(path, 0o600)
+                  print(json.dumps(report, indent=2))
+                  print("\nSaved report:", path)
+                  return 0
+              except (OSError, RuntimeError) as exc:
+                  print("Assessment error:", exc, file=sys.stderr)
+                  return 1
+          
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          GRADER_PYTHON
+          chmod 0755 /usr/local/bin/cloudx-grade
+          cat > /usr/local/bin/cloudx-reset <<'RESET_SHELL'
+          #!/bin/bash
+          set -euo pipefail
+          test "$(id -u)" -eq 0 || { echo 'Run sudo cloudx-reset' >&2; exit 1; }
+          chmod 0644 /home/learner/legacy-backups/app.conf.bak
+          rm -f /home/learner/reflection.txt
+          echo 'Challenge reset to world-readable demo backup; run as learner to fix it.'
+          RESET_SHELL
+          chmod 0755 /usr/local/bin/cloudx-reset
+          mkdir -p /var/lib/cloudx-ctf/reports
+          chmod 0700 /var/lib/cloudx-ctf /var/lib/cloudx-ctf/reports
+          # Stop AND terminate the EC2 instance after the chosen time limit.
+          # This does not delete the CloudFormation stack or its networking resources.
+          systemd-run --unit=cloudx-expire --on-active=${RuntimeMinutes}m /usr/sbin/shutdown -h now
+          echo 'Cloudx-CTF initialized; instructor: sudo cloudx-grade'
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID for your demonstration.
+    Value: !Ref LabInstance
+  PublicIP:
+    Description: Use with your downloaded key pair (SSH is limited to AllowedSshCidr).
+    Value: !GetAtt LabInstance.PublicIp
+  Challenge:
+    Description: Open an instructor SSH session, then run sudo su - learner.
+    Value: "cat README-LAB.txt"
+  Cleanup:
+    Description: Delete the CloudFormation stack after testing, even if EC2 auto-terminates.
+    Value: "aws cloudformation delete-stack --stack-name cloudx-ctf-demo --region us-east-1"
