@@ -1,0 +1,38 @@
+{
+  "attempt_id": "demo-attempt-001",
+  "learner_id": "demo-learner-001",
+  "challenge_id": "linux-file-permissions-01",
+  "challenge_version": "0.1",
+  "source": "synthetic_demo_only",
+  "checks": [
+    {
+      "name": "exposure_identified",
+      "passed": true
+    },
+    {
+      "name": "remediation_applied",
+      "passed": true
+    },
+    {
+      "name": "unauthorized_access_blocked",
+      "passed": true
+    },
+    {
+      "name": "legitimate_access_preserved",
+      "passed": false
+    }
+  ],
+  "command_events": [
+    {
+      "sequence": 1,
+      "command": "stat /opt/cloudx-ctf/legacy-backups/app.conf.bak",
+      "exit_code": 0
+    },
+    {
+      "sequence": 2,
+      "command": "sudo chmod 0600 /opt/cloudx-ctf/legacy-backups/app.conf.bak",
+      "exit_code": 0
+    }
+  ],
+  "explanation": "Instructor reviews separately"
+}
