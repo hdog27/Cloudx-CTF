@@ -46,6 +46,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref LabVPC
+      AvailabilityZone: us-east-1a
       CidrBlock: 10.72.1.0/24
       MapPublicIpOnLaunch: true
       Tags: [{Key: Name, Value: cloudx-demo-subnet}]
